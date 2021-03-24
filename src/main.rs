@@ -1,13 +1,23 @@
 use rand::Rng;
 
+extern crate termion;
+
+use std::io::{stdin, stdout, Read, Write};
+use termion::async_stdin;
+use termion::clear;
+use termion::cursor;
+use termion::event::{Event, Key};
+use termion::input::TermRead;
+use termion::raw::IntoRawMode;
+
 use std::mem::swap;
 use std::vec::Vec;
-use std::{thread, time};
+use std::{process, thread, time};
 
-const WIDTH: usize = 25;
-const HEIGHT: usize = 60;
-// const WIDTH: usize = 10;
-// const HEIGHT: usize = 20;
+// const WIDTH: usize = 25;
+// const HEIGHT: usize = 60;
+const WIDTH: usize = 10;
+const HEIGHT: usize = 20;
 
 const MINO_WIDTH: usize = 4;
 const MINO_HEIGHT: usize = 4;
@@ -87,22 +97,55 @@ impl Console {
     }
   }
 
+  fn is_moveable(
+    &self,
+    f: &Vec<Vec<bool>>,
+    m: &Vec<Vec<bool>>,
+    posx: &usize,
+    posy: &usize,
+  ) -> bool {
+    let mut ret = true;
+    for y in 0..MINO_HEIGHT {
+      for x in 0..MINO_WIDTH {
+        if m[y][x] == true && f[posy + y][posx + x] == true {
+          // cannot move
+          ret = false;
+          return ret;
+        }
+      }
+    }
+    ret
+  }
+
   fn put_mino(&self, f: &mut Vec<Vec<bool>>, m: &Vec<Vec<bool>>) {
     for y in 0..MINO_HEIGHT {
       for x in 0..MINO_WIDTH {
         if m[y][x] == true {
           f[self.mino_posy + y][self.mino_posx + x] = true;
-        } else {
-          f[self.mino_posy + y][self.mino_posx + x] = false;
         }
       }
     }
   }
 
-  fn new_mino(&self, mino: &mut Vec<Vec<bool>>) {
+  fn select_mino(&mut self) {
     let mut rng = rand::thread_rng();
-    let pos = rng.gen_range(2..WIDTH - 1);
+    self.mino_shape = match rng.gen_range(0..MINO_KIND) {
+      0 => Tetrimino::I,
+      1 => Tetrimino::O,
+      2 => Tetrimino::L,
+      3 => Tetrimino::J,
+      4 => Tetrimino::S,
+      5 => Tetrimino::Z,
+      6 => Tetrimino::T,
+      _ => Tetrimino::T,
+    };
+  }
+
+  fn new_mino(&mut self, mino: &mut Vec<Vec<bool>>) {
+    let mut rng = rand::thread_rng();
+    let pos = rng.gen_range(2..WIDTH - MINO_WIDTH - 1);
     println!("{}", pos);
+    self.mino_posx = pos;
 
     match self.mino_shape {
       Tetrimino::I => {
@@ -163,17 +206,16 @@ impl Console {
     }
   }
 
-  fn rot_mino(&self, mino: &mut Vec<Vec<bool>>) {
-    let r = (4000000 + self.mino_rot) % 4;
+  fn rot_mino(&mut self, mino: &mut Vec<Vec<bool>>) {
+    let r = self.mino_rot % 4;
     for _ in 0..r {
       self.rot_matrix(mino);
     }
+    self.mino_rot = 0;
   }
 }
 
 fn main() {
-  println!("Tetris");
-
   let mut rng = rand::thread_rng();
 
   let mut console = Console {
@@ -205,26 +247,120 @@ fn main() {
   console.init_field(&mut field);
 
   console.new_mino(&mut mino);
-  // console.rot_mino(&mut mino);
+
+  let stdout = stdout();
+  let mut stdout = stdout.lock().into_raw_mode().unwrap();
+  let mut stdin = async_stdin().bytes();
 
   loop {
-    // wait
-    thread::sleep(time::Duration::from_millis(FALL_INTERVAL_MS));
+    write!(stdout, "{}", termion::clear::CurrentLine).unwrap();
 
-    console.clear();
-    console.draw_score();
+    let b = stdin.next();
 
-    let old_field = field.clone();
-    console.put_mino(&mut field, &mino);
+    match b {
+      Some(Ok(b'q')) => {
+        break;
+      }
+      Some(Ok(b'a')) => {
+        if console.is_moveable(
+          &field,
+          &mino,
+          &(console.mino_posx - 1),
+          &(console.mino_posy),
+        ) {
+          console.mino_posx -= 1;
+        }
+      }
+      Some(Ok(b'd')) => {
+        if console.is_moveable(
+          &field,
+          &mino,
+          &(console.mino_posx + 1),
+          &(console.mino_posy),
+        ) {
+          console.mino_posx += 1;
+        }
+      }
+      Some(Ok(b'w')) => {
+        console.mino_rot += 1;
+      }
+      Some(Ok(b's')) => {
+        console.mino_rot += 3;
+      }
+      _ => {
+        if console.is_moveable(
+          &field,
+          &mino,
+          &(console.mino_posx),
+          &(console.mino_posy + 1),
+        ) {
+          console.mino_posy += 1;
+        } else {
+          console.put_mino(&mut field, &mino);
 
-    console.draw_field(&field);
+          console.mino_posy = 0;
 
-    if console.mino_posy < HEIGHT - MINO_HEIGHT - 1 {
-      console.mino_posy += 1;
-    } else {
-      console.mino_posy = 0;
+          console.select_mino();
+          console.new_mino(&mut mino);
+        }
+      }
     }
+    stdout.flush().unwrap();
 
-    field = old_field.clone();
+    {
+      // 画面全体をクリアする
+      write!(stdout, "{}", clear::All);
+      // カーソルを左上に設定する(1-indexed)
+      write!(stdout, "{}", cursor::Goto(1, 1));
+
+      // title and score
+      write!(stdout, "Tetris by Rust.\tSCORE : {}\r\n", console.score);
+
+      let old_field = field.clone();
+
+      console.rot_mino(&mut mino);
+
+      // put mino
+      for y in 0..MINO_HEIGHT {
+        for x in 0..MINO_WIDTH {
+          if mino[y][x] == true {
+            field[console.mino_posy + y][console.mino_posx + x] = true;
+          } else {
+            // field[console.mino_posy + y][console.mino_posx + x] = false;
+          }
+        }
+      }
+
+      //draw_field
+      for y in 1..HEIGHT {
+        for x in 1..WIDTH {
+          if field[y][x] == true {
+            write!(stdout, "{}", CHAR_WALL);
+          } else {
+            write!(stdout, "{}", CHAR_EMPTY);
+          }
+        }
+        // newsline
+        write!(stdout, "\r\n");
+      }
+
+      // if console.mino_posy < HEIGHT - MINO_HEIGHT - 1 {
+      //   console.mino_posy += 1;
+      // } else {
+      //   console.mino_posy = 0;
+
+      //   console.select_mino();
+      //   console.new_mino(&mut mino);
+      // }
+      field = old_field.clone();
+
+      // write!("{:?}", mino);
+
+      // 最後にフラッシュする
+      stdout.flush().unwrap();
+
+      // wait
+      thread::sleep(time::Duration::from_millis(FALL_INTERVAL_MS));
+    }
   }
 }
